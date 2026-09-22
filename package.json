@@ -1,0 +1,16 @@
+{
+  "name": "pepecoin-js-wallet",
+  "version": "0.1.0",
+  "description": "PepeCoin JS Wallet: embeddable Node.js wallet library, no HTTP server or Core RPC.",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": { "types": "./index.d.ts", "import": "./index.js", "default": "./index.js" },
+    "./server": "./server-adapter.js"
+  },
+  "files": ["index.js", "index.d.ts", "server-adapter.js", "lib/*.js", "examples/*.js", "README.md"],
+  "engines": { "node": ">=24.13.0" },
+  "scripts": { "test": "node --test test/*.test.js" },
+  "dependencies": { "@noble/curves": "1.9.7" }
+}

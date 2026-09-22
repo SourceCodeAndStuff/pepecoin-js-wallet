@@ -1,0 +1,28 @@
+# Dependencies, local configuration, and generated output
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+*.tgz
+nbproject/private/
+.DS_Store
+Thumbs.db
+
+# Never commit wallet keys, credentials, chain indexes, or backups
+data/
+wallet-data/
+application-wallet-data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.key
+*.pem
+*.p12
+*.pfx
+users.json
+wallet-server.lock*
+*wallet-backup*.json
+*wallet*backup*.json
