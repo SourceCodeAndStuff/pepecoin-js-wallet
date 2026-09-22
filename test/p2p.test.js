@@ -192,3 +192,83 @@ test('peer connect completes only after the version/verack handshake', async () 
   assert.equal(peer.remoteStartHeight, 0);
   peer.close(); await new Promise(resolve => server.close(resolve));
 });
+
+test('a frame with the wrong network magic is rejected instead of buffered forever', () => {
+  const decoder = new MessageDecoder();
+  assert.throws(() => decoder.push(Buffer.alloc(24, 0x41)), /network magic/);
+  assert.equal(decoder.buffer.length, 0);
+  assert.deepEqual(decoder.push(encodeMessage('ping', Buffer.from('ok'))), [{ command: 'ping', payload: Buffer.from('ok') }]);
+});
+
+test('headers pages above the protocol limit are rejected and AuxPoW parsing stays linear', () => {
+  const plain = Buffer.alloc(81);
+  assert.throws(() => parseHeaders(Buffer.concat([Buffer.from([0xfd, 0xd1, 0x07]), ...Array(2001).fill(plain)])), /Too many headers/);
+  const header = Buffer.alloc(80); header.writeUInt32LE(0x100, 0);
+  const coinbase = Buffer.concat([Buffer.alloc(4, 1), Buffer.from([1]), Buffer.alloc(36), Buffer.from([0]), Buffer.alloc(4), Buffer.from([1]), Buffer.alloc(8), Buffer.from([0]), Buffer.alloc(4)]);
+  const entry = Buffer.concat([header, coinbase, Buffer.alloc(32), Buffer.from([0]), Buffer.alloc(4), Buffer.from([0]), Buffer.alloc(4), Buffer.alloc(80), Buffer.from([0])]);
+  const started = performance.now();
+  const parsed = parseHeaders(Buffer.concat([Buffer.from([0xfd, 0xd0, 0x07]), ...Array(2000).fill(entry)]));
+  assert.equal(parsed.length, 2000);
+  assert.ok(parsed[0].auxpow.parentHeader.length === 80);
+  assert.ok(performance.now() - started < 2000, 'parsing must not copy the payload per header');
+});
+
+test('addr gossip is bounded and queued behind configured peers', () => {
+  const manager = new MultiPeerManager({ archivePeers: [], seeds: [], maxPeers: 0 });
+  const peer = Object.assign(new EventEmitter(), { ready: true, remoteServices: 1n, close() {} });
+  manager.connectTo(peer);
+  const entry = n => { const b = Buffer.alloc(30); b.writeBigUInt64LE(1n, 4); b.set([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 98, (n >> 16) & 255, (n >> 8) & 255, n & 255], 12); b.writeUInt16BE(33874, 28); return b; };
+  for (let m = 0; m < 5; m++) {
+    const addrs = Array.from({ length: 1000 }, (_, i) => entry(m * 1000 + i));
+    peer.emit('message', { command: 'addr', payload: Buffer.concat([Buffer.from([0xfd, 0xe8, 0x03]), ...addrs]) });
+  }
+  assert.ok(manager.candidates.length <= 2000);
+  manager.close();
+});
+
+test('advertised network height is the median claim, so one peer cannot inflate it', () => {
+  const manager = new MultiPeerManager({ archivePeers: [], seeds: [] });
+  for (const height of [1000, 1001, 99_999_999]) manager.connectTo(Object.assign(new EventEmitter(), { ready: true, remoteServices: 1n, remoteStartHeight: height, requestHeaders() {}, close() {} }));
+  assert.equal(manager.remoteStartHeight, 1001);
+  manager.close();
+});
+
+test('an indexed tip is trusted only after independent peers confirm it', async () => {
+  const tip = Buffer.alloc(32, 5);
+  const witness = (host, reply) => Object.assign(new EventEmitter(), { host, ready: true, remoteServices: 1n, close() {},
+    requestHeaders() { setImmediate(() => this.emit('message', { command: 'headers', payload: reply })); } });
+  const agrees = Buffer.from([0]);
+  const next = Buffer.alloc(81); tip.copy(next, 4);
+  const forked = Buffer.alloc(81);
+  const build = replies => { const m = new MultiPeerManager({ archivePeers: [], seeds: [] }); replies.forEach(([host, r]) => m.connectTo(witness(host, r))); return m; };
+  const ok = build([['1.1.0.1', agrees], ['2.2.0.1', Buffer.concat([Buffer.from([1]), next])], ['3.3.0.1', Buffer.concat([Buffer.from([1]), forked])]]);
+  assert.deepEqual(await ok.confirmTip(tip, { timeoutMs: 1000 }), { agreed: 2, asked: 3 });
+  const sameSubnet = build([['1.1.0.1', agrees], ['1.1.0.2', agrees]]);
+  await assert.rejects(sameSubnet.confirmTip(tip, { timeoutMs: 1000 }), /Only 1 of 1/);
+  const disagree = build([['1.1.0.1', agrees], ['2.2.0.1', Buffer.concat([Buffer.from([1]), forked])]]);
+  await assert.rejects(disagree.confirmTip(tip, { timeoutMs: 1000 }), /Only 1 of 2/);
+  for (const m of [ok, sameSubnet, disagree]) m.close();
+});
+
+test('a single peer echoing a transaction back is not enough to report it as relayed', async () => {
+  const manager = new MultiPeerManager();
+  manager.readyPeers.add({ broadcastTransaction: async () => {} });
+  manager.readyPeers.add({ broadcastTransaction: async () => { throw new Error('rejected'); } });
+  await assert.rejects(manager.broadcastTransaction(Buffer.from([1])), /Only 1 Pepecoin peer/);
+});
+
+test('a post-handshake socket error without listeners closes the peer instead of crashing', async () => {
+  const server = net.createServer(socket => {
+    const decoder = new MessageDecoder();
+    socket.on('error', () => {});
+    socket.on('data', data => { for (const m of decoder.push(data)) if (m.command === 'version') { socket.write(encodeMessage('version', versionPayload(0))); socket.write(encodeMessage('verack')); } });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const peer = new PepecoinPeer({ host: '127.0.0.1', port: server.address().port, timeoutMs: 1000 });
+  await peer.connect();
+  assert.equal(peer.listenerCount('error'), 0);
+  const socket = peer.socket;
+  assert.doesNotThrow(() => socket.emit('error', new Error('connection reset')));
+  assert.equal(peer.socket, null);
+  await new Promise(resolve => server.close(resolve));
+});

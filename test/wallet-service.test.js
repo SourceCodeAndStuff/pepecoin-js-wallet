@@ -25,7 +25,7 @@ async function fixture(t) {
   const vault = new WalletVault(dir); t.after(()=>{if(vault.db.open)vault.close();});
   const data = { height:1000, utxos:[], transactions:[], legacyPending:[] };
   const index = { watchIdentity:async()=>{}, walletSnapshot:async ids=>({...data,utxos:data.utxos.filter(u=>ids.includes(u.identity)),transactions:data.transactions.filter(u=>ids.includes(u.identity))}) };
-  const status = { state:'synced',height:1000,targetHeight:1000,lastSyncedAt:new Date().toISOString() };
+  const status = { state:'synced',height:1000,targetHeight:1000,lastSyncedAt:new Date().toISOString(),verifiedHeight:1000 };
   let broadcasts=0;
   const service = new WalletService({vault,index,status,broadcast:async()=>{broadcasts++;}});
   const wallet = await service.create('owner','account-1','Account One');
@@ -120,4 +120,16 @@ test('missing master key fails closed rather than silently creating a replacemen
   const f=await fixture(t);f.vault.close();await rename(path.join(f.dir,'wallet.key'),path.join(f.dir,'wallet.key.saved'));
   assert.throws(()=>new WalletVault(f.dir),/missing/);
   assert.equal((await readFile(path.join(f.dir,'wallet.key.saved'))).length,32);
+});
+
+test('deposits above the peer-confirmed height are never eligible, even while the index looks fresh', async t => {
+  const f = await fixture(t);
+  f.data.transactions.push({ identity: f.wallet.addresses[0].identity, txid: '22'.repeat(32), height: 900, time: 1, receivedKoinu: '500000000', spentKoinu: '0' });
+  f.status.verifiedHeight = 1000;
+  assert.equal((await f.service.snapshot('owner', f.wallet.id)).deposits[0].eligible, true);
+  // A sync in progress (or a dishonest peer) indexed blocks that independent peers have not confirmed.
+  f.status.verifiedHeight = 899; f.status.state = 'syncing';
+  assert.equal((await f.service.snapshot('owner', f.wallet.id)).deposits[0].eligible, false);
+  f.status.verifiedHeight = null;
+  assert.equal((await f.service.snapshot('owner', f.wallet.id)).deposits[0].eligible, false);
 });

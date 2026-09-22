@@ -43,6 +43,8 @@ export interface SyncStatus {
   state: string; height: number; startHeight: number; blocksSynced: number;
   targetHeight: number | null; progressPercent: number | null; peer: string | null;
   error: string | null; updatedAt: string | null; lastSyncedAt: string | null;
+  /** Highest height whose tip independent peers confirmed; deposits above it are never eligible. */
+  verifiedHeight: number | null;
 }
 /**
  * Payment request. Amounts are decimal PEPE strings, never floating-point money values.

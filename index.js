@@ -169,7 +169,15 @@ export class PepecoinWallet extends EventEmitter {
    * @param {boolean} [locked=true] - Desired spending-lock state.
    * @returns {Promise<{changes: number|bigint, lastInsertRowid: number|bigint}>} SQLite write result.
    */
-  lockSpending(locked = true) { return this.#run(() => this.#runtime.vault.db.prepare("INSERT OR REPLACE INTO settings VALUES ('locked',?)").run(locked ? '1' : '0')); }
+  lockSpending(locked = true) { return this.#run(() => {
+    const { db } = this.#runtime.vault;
+    // 'library' ownership stops console operators from releasing a lock set by the host application.
+    return db.transaction(() => {
+      if (locked) db.prepare("INSERT OR REPLACE INTO settings VALUES ('locked-by','library')").run();
+      else db.prepare("DELETE FROM settings WHERE name='locked-by'").run();
+      return db.prepare("INSERT OR REPLACE INTO settings VALUES ('locked',?)").run(locked ? '1' : '0');
+    })();
+  }); }
   /**
    * Encrypt this namespace's keys, contacts, outgoing requests and coin reservations.
    * Store the returned object and its passphrase securely and separately.

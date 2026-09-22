@@ -26,3 +26,21 @@ test('chain index exposes confirmed balance and wallet transaction activity', as
   assert.equal(activity.transactions.length, 1);
   assert.equal(activity.transactions[0].receivedKoinu, '125000000');
 });
+
+test('chain index keeps difficulty bits so a restarted sync can validate retargets', async t => {
+  const index = new ChainIndex(await mkdtemp(path.join(os.tmpdir(), 'pepe-context-')));
+  t.after(() => index.close());
+  await index.init();
+  assert.deepEqual(index.chainContext(), { height: -1, recent: [] });
+  const transaction = Buffer.concat([Buffer.alloc(4), Buffer.from([1]), Buffer.alloc(36), Buffer.from([0]), Buffer.alloc(4), Buffer.from([0]), Buffer.alloc(4)]);
+  const blocks = [1, 2, 3].map(height => {
+    const header = Buffer.alloc(80); hash256d(transaction).copy(header, 36);
+    header.writeUInt32LE(1705975200 + height * 60, 68); header.writeUInt32LE(0x1e0ffff0 - height, 72);
+    return { rawBlock: Buffer.concat([header, Buffer.from([1]), transaction]), height };
+  });
+  await index.ingestBatch(blocks);
+  const context = index.chainContext();
+  assert.equal(context.height, 3);
+  assert.deepEqual(context.recent.map(r => r.bits), [0x1e0ffff0 - 1, 0x1e0ffff0 - 2, 0x1e0ffff0 - 3]);
+  assert.deepEqual(context.recent.map(r => r.time), [1705975260, 1705975320, 1705975380]);
+});
